@@ -41,10 +41,12 @@ from bk_monitor_base.domains.uptime_check.models import (
     UptimeCheckGroupModel,
     UptimeCheckNodeModel,
     UptimeCheckTaskCollectorLog,
+    UptimeCheckTaskDeployPolicy,
     UptimeCheckTaskModel,
     UptimeCheckTaskSubscription,
 )
 from bk_monitor_base.domains.uptime_check.services.config_generator import ConfigGeneratorService
+from bk_monitor_base.domains.uptime_check.services.deploy_policy import UptimeCheckDeployPolicy
 from bk_monitor_base.domains.uptime_check.services.task_manager import TaskManager
 from bk_monitor_base.infras.third_party_api.nodeman.api import batch_get_subscription_task_result
 
@@ -485,6 +487,58 @@ def refresh_task_status(
 
     # 1. 校验参数
     _check_bk_biz_id_tenant_id(bk_biz_id, bk_tenant_id)
+    if not task_ids:
+        return {}
+
+    # 走节点管理 V3 部署策略的任务按最近一次执行汇总状态，其余任务继续按订阅刷新
+    policy_status_updates, subscription_task_ids = _build_deploy_policy_status_updates(
+        bk_tenant_id, bk_biz_id, task_ids
+    )
+    updates = _batch_update_task_status(policy_status_updates)
+    updates.update(_refresh_subscription_task_status(bk_tenant_id, bk_biz_id, subscription_task_ids))
+    return updates
+
+
+def _build_deploy_policy_status_updates(
+    bk_tenant_id: str, bk_biz_id: int, task_ids: list[int]
+) -> tuple[dict[int, str], list[int]]:
+    """汇总走部署策略的任务状态
+
+    Args:
+        bk_tenant_id: 租户ID
+        bk_biz_id: 业务ID（在任务侧做业务隔离）
+        task_ids: 任务ID列表
+
+    Returns:
+        (部署策略任务的状态更新映射, 仍按订阅刷新的任务ID列表)
+    """
+    # 部署策略属于创建时的租户，查询执行记录用绑定里保存的租户
+    binding_tenants: dict[int, str] = dict(
+        UptimeCheckTaskDeployPolicy.objects.filter(uptimecheck_id__in=task_ids).values_list(
+            "uptimecheck_id", "bk_tenant_id"
+        )
+    )
+    bound_task_ids = set(binding_tenants)
+    if not bound_task_ids:
+        return {}, task_ids
+
+    updates: dict[int, str] = {}
+    tasks = UptimeCheckTaskModel.objects.filter(pk__in=bound_task_ids, bk_biz_id=bk_biz_id, is_deleted=False)
+    for task in tasks:
+        tenant = binding_tenants.get(task.pk) or bk_tenant_id
+        try:
+            status = UptimeCheckDeployPolicy(task=task, bk_tenant_id=tenant).refresh_status()
+        except Exception as e:
+            # 状态未知时不更新，避免把任务误判为运行中或失败
+            logger.warning(f"获取拨测任务{task.pk}部署策略执行状态失败: {e}")
+            continue
+        if status:
+            updates[task.pk] = status
+    return updates, [task_id for task_id in task_ids if task_id not in bound_task_ids]
+
+
+def _refresh_subscription_task_status(bk_tenant_id: str, bk_biz_id: int, task_ids: list[int]) -> dict[int, str]:
+    """按 V2 订阅刷新任务状态"""
     if not task_ids:
         return {}
 

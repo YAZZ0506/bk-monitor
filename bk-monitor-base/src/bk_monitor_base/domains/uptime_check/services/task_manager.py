@@ -31,10 +31,11 @@ from bk_monitor_base.domains.uptime_check.models import (
     UptimeCheckTaskSubscription,
 )
 from bk_monitor_base.domains.uptime_check.services.data_access import DataAccessService
+from bk_monitor_base.domains.uptime_check.services.deploy_policy import UptimeCheckDeployPolicy, use_deploy_policy
 from bk_monitor_base.domains.uptime_check.services.subscription import SubscriptionService
 from bk_monitor_base.infras.conversion import safe_int
 from bk_monitor_base.infras.exception.base_error import BaseError
-from bk_monitor_base.infras.nodeman_control import host_queries
+from bk_monitor_base.infras.nodeman_control import DeployState, host_queries
 from bk_monitor_base.infras.third_party_api.nodeman.api import (
     CreateSubscriptionParams,
     UpdateSubscriptionParams,
@@ -50,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 class TestTaskError(BaseError):
     """拨测任务测试异常。"""
+
+
+class DeployTaskError(BaseError):
+    """拨测任务通过节点管理部署策略下发的异常。"""
 
 
 def _parse_beat_version(version: Any) -> Version | None:
@@ -145,6 +150,7 @@ class TaskManager:
         self.data_access_service = DataAccessService(
             bk_tenant_id=self.bk_tenant_id, bk_biz_id=task.bk_biz_id, protocol=task.protocol
         )
+        self.deploy_policy = UptimeCheckDeployPolicy(task=task, bk_tenant_id=self.bk_tenant_id)
 
     def test(self, node_id_list: list[int] | None = None) -> str:
         """
@@ -394,35 +400,11 @@ class TaskManager:
 
             UptimeCheckTaskCollectorLog.objects.filter(task_id=self.task.pk).update(is_deleted=True)
 
-            # 准备节点数据
-            nodes: list[dict[str, Any]] = []
-            for node in self.task.nodes.all():
-                nodes.append(
-                    {"bk_biz_id": node.bk_biz_id, "bk_host_id": node.bk_host_id, "ip": node.ip, "plat_id": node.plat_id}
-                )
-
-            # 生成订阅配置
-            task_group_id = self._get_task_group_id()
-            subscription_configs = self.subscription_service.generate_subscription_config(
-                task_id=self.task.pk,
-                protocol=self.task.protocol,
-                config=self.task.config or {},
-                nodes=nodes,
-                data_id=data_id,
-                labels=self.task.labels or {},
-                task_group_id=task_group_id,
-                use_custom_report=use_custom,
-            )
-
-            existing_subscriptions = self._get_existing_subscriptions()
-
-            # 判断是新增还是更新
-            if not existing_subscriptions:
-                # 新增流程
-                self._handle_create_subscriptions(subscription_configs)
+            if use_deploy_policy(self.task.pk):
+                # 节点管理 V3：声明部署策略并执行，结果由状态刷新按执行记录汇总
+                self._deploy_by_policy(data_id=data_id, use_custom_report=use_custom)
             else:
-                # 更新流程
-                self._handle_update_subscriptions(subscription_configs, existing_subscriptions)
+                self._deploy_by_subscription(data_id=data_id, use_custom_report=use_custom)
 
             # 执行部署成功回调钩子(如:追加指标缓存)
             if self.on_deploy_success:
@@ -457,6 +439,9 @@ class TaskManager:
             Exception: 启动失败时抛出异常
         """
         logger.info(f"启动拨测任务: task_id={self.task.pk}")
+
+        if use_deploy_policy(self.task.pk):
+            return self._start_by_policy(operator)
 
         # 步骤1: 前置检查是否有运行中的启停任务
         try:
@@ -536,6 +521,9 @@ class TaskManager:
         """
         logger.info(f"停止拨测任务: task_id={self.task.pk}")
 
+        if use_deploy_policy(self.task.pk):
+            return self._stop_by_policy(operator)
+
         # 步骤1: 前置检查是否有运行中的启停任务
         try:
             subscriptions = self._get_existing_subscriptions()
@@ -601,6 +589,11 @@ class TaskManager:
         """
         logger.info(f"删除拨测任务: task_id={self.task.pk}")
 
+        if use_deploy_policy(self.task.pk):
+            # 部署策略没有删除接口，切换为反相后保留，由节点管理持续确保子配置不存在
+            self.deploy_policy.withdraw()
+            return
+
         action_name = f"bkmonitorbeat_{self.task.protocol.lower()}"
         subscriptions = self._get_existing_subscriptions()
 
@@ -624,6 +617,102 @@ class TaskManager:
         UptimeCheckTaskSubscription.objects.filter(uptimecheck_id=self.task.pk).update(
             is_deleted=True, update_user=operator, update_time=datetime.now()
         )
+
+    def _deploy_by_subscription(self, data_id: int, use_custom_report: bool) -> None:
+        """V2：按节点业务生成订阅配置并创建/更新订阅。"""
+        # 准备节点数据
+        nodes: list[dict[str, Any]] = []
+        for node in self.task.nodes.all():
+            nodes.append(
+                {"bk_biz_id": node.bk_biz_id, "bk_host_id": node.bk_host_id, "ip": node.ip, "plat_id": node.plat_id}
+            )
+
+        # 生成订阅配置
+        task_group_id = self._get_task_group_id()
+        subscription_configs = self.subscription_service.generate_subscription_config(
+            task_id=self.task.pk,
+            protocol=self.task.protocol,
+            config=self.task.config or {},
+            nodes=nodes,
+            data_id=data_id,
+            labels=self.task.labels or {},
+            task_group_id=task_group_id,
+            use_custom_report=use_custom_report,
+        )
+
+        existing_subscriptions = self._get_existing_subscriptions()
+
+        # 判断是新增还是更新
+        if not existing_subscriptions:
+            # 新增流程
+            self._handle_create_subscriptions(subscription_configs)
+        else:
+            # 更新流程
+            self._handle_update_subscriptions(subscription_configs, existing_subscriptions)
+
+    def _deploy_by_policy(self, data_id: int, use_custom_report: bool) -> None:
+        """V3：一个任务一条部署策略，上下文与订阅步骤一致，跨业务节点由策略按主机所属业务拆分范围。"""
+        template_name, context = self.subscription_service.generate_sub_config_context(
+            task_id=self.task.pk,
+            protocol=self.task.protocol,
+            config=self.task.config or {},
+            data_id=data_id,
+            labels=self.task.labels or {},
+            task_group_id=self._get_task_group_id(),
+            use_custom_report=use_custom_report,
+        )
+        self.deploy_policy.deploy(template_name, context, self._get_node_host_ids())
+
+    def _get_node_host_ids(self) -> list[int]:
+        """拨测节点对应的主机ID；只有 IP + 云区域的节点先回填主机ID，仍查不到则不下发。"""
+        host_ids: list[int] = []
+        missing_nodes: list[str] = []
+        for node in self.task.nodes.all():
+            bk_host_id = node.bk_host_id or node.set_host_id()
+            if bk_host_id:
+                host_ids.append(int(bk_host_id))
+            else:
+                missing_nodes.append(f"{node.name}({node.ip})")
+        if missing_nodes:
+            raise DeployTaskError(_("以下拨测节点未查到主机ID，无法下发：%s") % ",".join(missing_nodes))
+        if not host_ids:
+            raise DeployTaskError(_("拨测任务没有可下发的节点"))
+        return host_ids
+
+    def _check_policy_not_running(self) -> None:
+        """部署策略最近一次执行未结束时不允许启停，与订阅的前置检查一致。"""
+        state = self.deploy_policy.execution_state()
+        if state and state.state in (DeployState.DISPATCHING, DeployState.RUNNING):
+            raise DeployTaskError(_("存在运行中的启停任务，请稍后再试"))
+
+    def _start_by_policy(self, operator: str) -> str:
+        """V3 启动：恢复正向声明并按当前配置重新下发，结果由状态刷新确认。"""
+        self._check_policy_not_running()
+        self.task.update_user = operator
+        self.task.save(update_fields=["update_user", "update_time"])
+        return self.deploy()
+
+    def _stop_by_policy(self, operator: str) -> str:
+        """V3 停止：切换为反相并执行，节点管理删除各节点上的子配置，不卸载 bkmonitorbeat。"""
+        if not self.deploy_policy.binding():
+            raise DeployTaskError(_("拨测任务对应部署策略不存在"))
+        self._check_policy_not_running()
+
+        self.task.status = UptimeCheckTaskStatus.STOPING.value
+        self.task.update_user = operator
+        self.task.save(update_fields=["status", "update_user", "update_time"])
+        try:
+            self.deploy_policy.withdraw()
+        except Exception as e:
+            logger.error(f"拨测任务停止失败: task_id={self.task.pk}, error={e}")
+            self.task.status = UptimeCheckTaskStatus.STOP_FAILED.value
+            self.task.save(update_fields=["status", "update_time"])
+            raise
+
+        self.task.status = UptimeCheckTaskStatus.STOPED.value
+        self.task.save(update_fields=["status", "update_time"])
+        logger.info(f"拨测任务停止成功: task_id={self.task.pk}")
+        return "success"
 
     def _get_task_group_id(self) -> str:
         """获取任务分组ID"""

@@ -78,24 +78,12 @@ class SubscriptionService:
             # ]
         """
         protocol_lower = protocol.lower()
-        labels = labels or {}
 
         # 第一步: 按业务ID对节点进行分组
         biz_nodes = self._group_nodes_by_biz(nodes)
 
-        # 第二步: 计算超时配置
-        available_duration = int(config.get("timeout", config.get("period", 60) * 1000))
-        timeout = self._calculate_timeout(available_duration)
-
-        # 第三步: 生成beat任务配置
-        tasks = self.config_generator.generate_sub_config(
-            protocol=protocol,
-            config=config,
-            task_id=task_id,
-            bk_biz_id=self.bk_biz_id,
-            labels=labels,
-            test=False,
-        )
+        # 第二、三步: 计算超时配置并生成beat任务配置
+        timeout, tasks = self._prepare_beat_tasks(task_id, protocol, config, labels)
 
         # 第四步: 为每个业务生成订阅配置
         params_list: list[dict[str, Any]] = []
@@ -115,6 +103,67 @@ class SubscriptionService:
             params_list.append(params)
 
         return params_list
+
+    def generate_sub_config_context(
+        self,
+        task_id: int,
+        protocol: str,
+        config: dict[str, Any],
+        data_id: int,
+        labels: dict[str, Any] | None = None,
+        task_group_id: str = "0",
+        use_custom_report: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        """生成 bkmonitorbeat 子配置的模板名与渲染上下文。
+
+        与订阅步骤使用同一份上下文，供节点管理 V3 部署策略声明子配置；各业务的订阅步骤本就相同，
+        因此不需要按节点业务拆分。
+
+        Args:
+            task_id: 拨测任务ID
+            protocol: 协议类型(HTTP/TCP/UDP/ICMP)
+            config: 任务配置字典
+            data_id: 数据ID
+            labels: 自定义标签
+            task_group_id: 任务分组ID,多个用逗号分隔
+            use_custom_report: 是否使用自定义上报
+
+        Returns:
+            (子配置模板名, 渲染上下文)
+        """
+        protocol_lower = protocol.lower()
+        timeout, tasks = self._prepare_beat_tasks(task_id, protocol, config, labels)
+        step = self._build_step(
+            protocol=protocol_lower,
+            task_id=task_id,
+            data_id=data_id,
+            timeout=timeout,
+            tasks=tasks,
+            config=config,
+            task_group_id=task_group_id,
+            use_custom_report=use_custom_report,
+        )
+        return step["config"]["config_templates"][0]["name"], step["params"]["context"]
+
+    def _prepare_beat_tasks(
+        self, task_id: int, protocol: str, config: dict[str, Any], labels: dict[str, Any] | None
+    ) -> tuple[int, list[dict[str, Any]]]:
+        """计算超时配置并生成 beat 任务配置。
+
+        Returns:
+            (超时时间(毫秒), beat任务配置列表)
+        """
+        available_duration = int(config.get("timeout", config.get("period", 60) * 1000))
+        timeout = self._calculate_timeout(available_duration)
+        tasks = self.config_generator.generate_sub_config(
+            protocol=protocol,
+            config=config,
+            task_id=task_id,
+            bk_biz_id=self.bk_biz_id,
+            labels=labels or {},
+            test=False,
+        )
+        return timeout, tasks
 
     def _group_nodes_by_biz(self, nodes: list[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:
         """

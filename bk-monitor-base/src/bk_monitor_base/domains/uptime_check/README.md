@@ -52,6 +52,18 @@
    - 生成完整订阅配置（`generate_subscription_config()`）
 2. **订阅管理**：在 `TaskManager` 中直接调用 nodeman API 进行订阅创建/更新/启停/卸载删除等操作
 3. **协作关系**：SubscriptionService 负责配置生成，TaskManager 负责编排流程并触发订阅操作
+4. **V3 上下文**：`generate_sub_config_context()` 返回子配置模板名与渲染上下文，与订阅步骤使用同一份上下文
+
+### 节点管理 V3 部署策略 (UptimeCheckDeployPolicy)
+
+开启 `ENABLE_NODEMAN_V3` 后，新建的拨测任务改为通过节点管理 V3 部署策略下发 bkmonitorbeat 子配置；
+公共能力在 `bk_monitor_base.infras.nodeman_control.sub_config_policy`，后续 bkmonitorbeat 其他采集场景复用。
+
+1. **路由**（`use_deploy_policy()`）：已有部署策略绑定的任务始终走部署策略；已有 V2 订阅的存量任务继续走订阅，不做迁移；其余任务按开关决定
+2. **一个任务一条策略**：策略名 `bkmonitor-uptimecheck-<任务ID>`，规格为 `specify_plugin_sub_config_template`，范围按节点主机在节点管理中所属的业务拆分；节点只有 IP 时先回填主机 ID，仍查不到或主机不在节点管理中时不下发
+3. **生命周期**：下发、编辑、启动为正向声明并执行；停止、删除把策略切换为反相（`ensure_absent`）并执行，策略保留（节点管理没有删除接口）
+4. **状态**：父任务只表示派发，`refresh_task_status()` 按最近一次正向执行在子插件任务中各节点的操作汇总为启动中 / 运行中 / 启动失败，失败节点的日志写入 `UptimeCheckTaskCollectorLog`；反相后的执行不改任务状态
+5. **绑定表**：`UptimeCheckTaskDeployPolicy`（`monitor_uptimechecktaskdeploypolicy`），旧模型模式下由 SaaS `monitor` 应用的迁移建表
 
 ### 数据接入服务 (DataAccessService)
 

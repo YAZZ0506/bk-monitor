@@ -10,8 +10,37 @@ from bk_monitor_base.infras.third_party_api.cmdb.api import find_host_biz_relati
 from bk_monitor_base.infras.third_party_api.nodeman import v3 as api_v3
 
 from .contracts import HostQueries, OfficialPlugins, PluginOperation
+from .sub_config_policy import (
+    DeployState,
+    ExecutionState,
+    HostDeployState,
+    SubConfigDeclaration,
+    SubConfigPolicies,
+    SubConfigPolicyError,
+)
 from .v2 import V2HostQueries, V2OfficialPlugins
 from .v3 import V3HostQueries, V3OfficialPlugins
+
+__all__ = [
+    "DeployState",
+    "ExecutionState",
+    "HostDeployState",
+    "HostQueries",
+    "HostQueryService",
+    "OfficialPluginService",
+    "OfficialPlugins",
+    "PluginOperation",
+    "SubConfigDeclaration",
+    "SubConfigPolicies",
+    "SubConfigPolicyError",
+    "get_host_queries",
+    "get_official_plugins",
+    "host_queries",
+    "nodeman_v3_enabled",
+    "official_plugins",
+    "sub_config_policies",
+    "unique_ids",
+]
 
 
 def _request_v3(action: str, tenant: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -88,3 +117,5 @@ class OfficialPluginService(OfficialPlugins):
 
 host_queries = HostQueryService()
 official_plugins = OfficialPluginService()
+# 共享进程子配置只有 V3 部署策略实现，是否走该能力由调用方按 nodeman_v3_enabled() 与已有绑定判断
+sub_config_policies = SubConfigPolicies(_request_v3)

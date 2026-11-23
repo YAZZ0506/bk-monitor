@@ -9,9 +9,11 @@ import time
 from bk_monitor_base.domains.space.cache import bk_biz_id_to_bk_tenant_id
 from bk_monitor_base.domains.uptime_check.models import (
     UptimeCheckTaskCollectorLog,
+    UptimeCheckTaskDeployPolicy,
     UptimeCheckTaskModel,
     UptimeCheckTaskSubscription,
 )
+from bk_monitor_base.domains.uptime_check.services.deploy_policy import UptimeCheckDeployPolicy
 from bk_monitor_base.infras.exception import BaseError as BKAPIError
 from bk_monitor_base.infras.third_party_api.nodeman.api import (
     batch_get_subscription_task_result,
@@ -91,6 +93,14 @@ def update_task_running_status(task_id: int) -> None:
     task = UptimeCheckTaskModel.objects.get(id=task_id)
     bk_biz_id = task.bk_biz_id
     bk_tenant_id = bk_biz_id_to_bk_tenant_id(bk_biz_id)
+
+    if UptimeCheckTaskDeployPolicy.objects.filter(uptimecheck_id=task_id).exists():
+        # 节点管理 V3 部署策略：按最近一次执行汇总，反相（停止、删除）后不更新
+        status = UptimeCheckDeployPolicy(task=task, bk_tenant_id=bk_tenant_id).refresh_status()
+        if status:
+            task.status = status
+            task.save()
+        return
 
     subscriptions = UptimeCheckTaskSubscription.objects.filter(uptimecheck_id=task_id)
     has_fail = False

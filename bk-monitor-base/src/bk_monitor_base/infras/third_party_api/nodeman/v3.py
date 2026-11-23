@@ -103,6 +103,62 @@ class ListV2CompatibleProcesses(NodeManV3Client):
     apigw_path: ClassVar[str] = "api/v3/process/list_v2_compatible"
 
 
+class CreateDeployPolicy(NodeManV3Client):
+    """创建部署策略，返回 deploy_policy_id。"""
+
+    action: ClassVar[str] = "create_deploy_policy"
+    apigw_path: ClassVar[str] = "api/v3/deploy_policy/create"
+
+
+class UpdateDeployPolicy(NodeManV3Client):
+    """按 fields 掩码更新部署策略，只保存声明，不触发执行。"""
+
+    action: ClassVar[str] = "update_deploy_policy"
+    apigw_path: ClassVar[str] = "api/v3/deploy_policy/update"
+
+
+class ExecuteDeployPolicy(NodeManV3Client):
+    """执行一次部署策略，返回本次执行的父 workflow_id。"""
+
+    action: ClassVar[str] = "execute_deploy_policy"
+    apigw_path: ClassVar[str] = "api/v3/deploy_policy/execute"
+
+
+class ListDeployPolicies(NodeManV3Client):
+    """分页查询部署策略。"""
+
+    action: ClassVar[str] = "list_deploy_policies"
+    apigw_path: ClassVar[str] = "api/v3/deploy_policy/list"
+
+
+class ListDeployPolicyWorkflows(NodeManV3Client):
+    """查询部署策略执行的父任务；父任务只表示派发，子任务链接在 children 中。"""
+
+    action: ClassVar[str] = "list_deploy_policy_workflows"
+    apigw_path: ClassVar[str] = "api/v3/deploy_policy/workflow/list"
+
+
+class ListPluginWorkflows(NodeManV3Client):
+    """查询插件任务流。"""
+
+    action: ClassVar[str] = "list_plugin_workflows"
+    apigw_path: ClassVar[str] = "api/v3/plugin/workflow/list"
+
+
+class ListPluginWorkflowOperations(NodeManV3Client):
+    """查询插件任务流中按主机拆分的操作。"""
+
+    action: ClassVar[str] = "list_plugin_workflow_operations"
+    apigw_path: ClassVar[str] = "api/v3/plugin/workflow/operation/list"
+
+
+class GetPluginWorkflowOperationInstanceLog(NodeManV3Client):
+    """查询插件操作实例的执行日志。"""
+
+    action: ClassVar[str] = "get_plugin_workflow_operation_instance_log"
+    apigw_path: ClassVar[str] = "api/v3/plugin/workflow/operation/instance/log/get"
+
+
 list_hosts = ListHosts()
 distinct_hosts = DistinctHosts()
 list_businesses = ListBusinesses()
@@ -111,3 +167,11 @@ install_plugin = InstallPlugin()
 list_plugins = ListPlugins()
 list_plugin_releases = ListPluginReleases()
 list_v2_compatible_processes = ListV2CompatibleProcesses()
+create_deploy_policy = CreateDeployPolicy()
+update_deploy_policy = UpdateDeployPolicy()
+execute_deploy_policy = ExecuteDeployPolicy()
+list_deploy_policies = ListDeployPolicies()
+list_deploy_policy_workflows = ListDeployPolicyWorkflows()
+list_plugin_workflows = ListPluginWorkflows()
+list_plugin_workflow_operations = ListPluginWorkflowOperations()
+get_plugin_workflow_operation_instance_log = GetPluginWorkflowOperationInstanceLog()

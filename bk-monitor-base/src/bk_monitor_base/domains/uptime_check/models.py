@@ -273,6 +273,34 @@ class UptimeCheckTaskSubscription(models.Model):
 
 
 @final
+class UptimeCheckTaskDeployPolicy(models.Model):
+    """
+    拨测任务与节点管理 V3 部署策略的绑定关系
+
+    一个拨测任务对应一条部署策略，跨业务的节点在同一条策略里按业务拆分范围。
+    存在该记录的任务始终走部署策略；停用和删除把策略切换为反相，记录保留。
+    """
+
+    uptimecheck_id = models.IntegerField("拨测任务id", unique=True)
+    bk_tenant_id = models.CharField("租户ID", default=DEFAULT_TENANT_ID, max_length=128)
+    deploy_policy_id = models.BigIntegerField("部署策略ID", null=True, default=None)
+    policy_name = models.CharField("部署策略名称", max_length=255)
+    last_workflow_id = models.CharField("最近一次执行的工作流ID", max_length=128, default="", blank=True)
+    bk_host_ids: list[int] = TextJSONField("最近一次执行的下发主机", default=list)  # pyright: ignore[reportAssignmentType]
+    ensure_absent = models.BooleanField("最近一次声明是否为反相", default=False)
+    create_time = models.DateTimeField("创建时间", auto_now_add=True)
+    update_time = models.DateTimeField("更新时间", auto_now=True)
+
+    objects = models_manager
+
+    @final
+    class Meta:
+        db_table = "monitor_uptimechecktaskdeploypolicy"
+        app_label = "uptime_check"
+        managed = managed
+
+
+@final
 class UptimeCheckTaskNodeRelation(models.Model):
     """
     拨测任务与节点的多对多关联表

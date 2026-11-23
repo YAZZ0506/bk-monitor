@@ -140,6 +140,24 @@ class UptimeCheckTaskSubscription(OperateRecordModel):
         unique_together = (("uptimecheck_id", "bk_biz_id"),)
 
 
+class UptimeCheckTaskDeployPolicy(models.Model):
+    """
+    拨测任务与节点管理 V3 部署策略的绑定关系
+
+    读写在 bk-monitor-base 的拨测领域（UptimeCheckTaskDeployPolicy），这里只负责建表，字段需与其保持一致。
+    """
+
+    uptimecheck_id = models.IntegerField("拨测任务id", unique=True)
+    bk_tenant_id = models.CharField("租户ID", default=DEFAULT_TENANT_ID, max_length=128)
+    deploy_policy_id = models.BigIntegerField("部署策略ID", null=True, default=None)
+    policy_name = models.CharField("部署策略名称", max_length=255)
+    last_workflow_id = models.CharField("最近一次执行的工作流ID", max_length=128, default="", blank=True)
+    bk_host_ids = JsonField("最近一次执行的下发主机", default=list)
+    ensure_absent = models.BooleanField("最近一次声明是否为反相", default=False)
+    create_time = models.DateTimeField("创建时间", auto_now_add=True)
+    update_time = models.DateTimeField("更新时间", auto_now=True)
+
+
 class UptimeCheckTask(OperateRecordModel):
     class Protocol:
         TCP = UptimeCheckProtocol.TCP
